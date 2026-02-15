@@ -177,17 +177,17 @@ class Indexer:
 
         Excludes:
         - Any path component starting with '.' (hidden files/directories)
-        - Any path component matching the exclusion patterns
+        - Any path matching the exclusion patterns
         """
         parts = Path(path).parts
         for part in parts:
             # Skip hidden files and directories
             if part.startswith("."):
                 return True
-            # Check against exclusion patterns
-            for pattern in patterns:
-                if fnmatch.fnmatch(part, pattern):
-                    return True
+        # Check full path against exclusion patterns
+        for pattern in patterns:
+            if fnmatch.fnmatch(path, pattern):
+                return True
         return False
 
     def _get_parent_id(self, parent_qualified_name: str | None) -> int | None:

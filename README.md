@@ -3,6 +3,7 @@
 [![PyPI version](https://img.shields.io/pypi/v/decoder-graph)](https://pypi.org/project/decoder-graph/)
 [![VS Code Marketplace](https://img.shields.io/visual-studio-marketplace/v/maryamtb.decoder)](https://marketplace.visualstudio.com/items?itemName=maryamtb.decoder)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![CI](https://github.com/maryamtb/decoder/workflows/CI/badge.svg)](https://github.com/maryamtb/decoder/actions)
 
 Inspired by debuggers, decoder is a static call graph analysis tool for Python. It maps how your code connects, tracing those connections from the routing layer to service layer and across the codebase, without the runtime execution a debugger would require.
 

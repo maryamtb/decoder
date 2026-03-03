@@ -219,6 +219,27 @@ class TestIndexer:
         assert stats.files == 1  # Only module.py indexed
         assert stats.skipped == 1  # test_module.py skipped
 
+    def test_default_excludes(self, repository: SymbolRepository, temp_dir: Path) -> None:
+        """Test that all DEFAULT_EXCLUDES patterns correctly exclude directory contents."""
+        from decoder.core.indexer import DEFAULT_EXCLUDES
+
+        (temp_dir / "keep.py").write_text("def keep(): pass")
+
+        # Create a directory and file for each non-wildcard pattern
+        for pattern in DEFAULT_EXCLUDES:
+            if "*" in pattern:
+                continue  # Skip glob patterns for this test
+            
+            excluded_dir = temp_dir / pattern
+            excluded_dir.mkdir(exist_ok=True)
+            (excluded_dir / "file.py").write_text("def file(): pass")
+
+        indexer = Indexer(repository)
+        stats = indexer.index_directory(temp_dir)
+
+        assert stats.files == 1  # Only keep.py indexed
+        assert stats.skipped == len([p for p in DEFAULT_EXCLUDES if "*" not in p])
+
 
 class TestTypedParameterResolution:
     """Tests for resolving method calls on typed parameters."""

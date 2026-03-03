@@ -189,13 +189,13 @@ class Indexer:
             for pattern in patterns:
                 if fnmatch.fnmatch(part, pattern):
                     return True
-                
+
         # Full-path matching required for glob patterns with path separators.
-        # Component-level matching handles "build", but not "build/*" or "**/*.pyc" 
+        # Component-level matching handles "build", but not "build/*" or "**/*.pyc"
         for pattern in patterns:
             if fnmatch.fnmatch(path, pattern):
                 return True
-            
+
         return False
 
     def _get_parent_id(self, parent_qualified_name: str | None) -> int | None:

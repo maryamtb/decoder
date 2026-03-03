@@ -229,7 +229,7 @@ class TestIndexer:
         for pattern in DEFAULT_EXCLUDES:
             if "*" in pattern:
                 continue  # Skip glob patterns for this test
-            
+
             excluded_dir = temp_dir / pattern
             excluded_dir.mkdir(exist_ok=True)
             (excluded_dir / "file.py").write_text("def file(): pass")

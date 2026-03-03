@@ -196,7 +196,7 @@ wheels = [
 ]
 
 [[package]]
-name = "decoder"
+name = "decoder-graph"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

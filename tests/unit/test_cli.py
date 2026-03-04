@@ -2,7 +2,7 @@
 
 import tempfile
 from pathlib import Path
-
+import os 
 import pytest
 from typer.testing import CliRunner
 
@@ -24,7 +24,12 @@ def indexed_dir(temp_dir: Path):
     py_file = temp_dir / "sample.py"
     py_file.write_text("def hello():\n    pass\n\ndef world():\n    hello()\n")
     runner.invoke(app, ["index", str(temp_dir)])
-    return temp_dir
+    
+    # chdir into temp dir so find/trace resolve the database correctly
+    original_dir = os.getcwd()
+    os.chdir(temp_dir)
+    yield temp_dir
+    os.chdir(original_dir)  # restore after test
 
 
 class TestIndexCommand:

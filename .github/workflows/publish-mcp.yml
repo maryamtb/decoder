@@ -1,4 +1,4 @@
-name: Publish to PyPI
+name: Publish MCP Server to PyPI
 
 on:
   release:
@@ -6,7 +6,7 @@ on:
 
 jobs:
   publish:
-    if: ${{ !startsWith(github.event.release.tag_name, 'mcp-server-v') && !startsWith(github.event.release.tag_name, 'vscode-v') }}
+    if: ${{ startsWith(github.event.release.tag_name, 'mcp-server-v') }}
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -23,13 +23,12 @@ jobs:
         run: uv python install 3.11
 
       - name: Sync dependencies
-        run: uv sync
-
-      - name: Run tests
-        run: uv run pytest
+        run: uv sync --directory mcp-server-decoder
 
       - name: Build package
-        run: uv build
+        run: uv build --directory mcp-server-decoder
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: mcp-server-decoder/dist/

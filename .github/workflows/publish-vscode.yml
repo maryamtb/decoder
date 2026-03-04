@@ -1,0 +1,43 @@
+name: Publish VS Code Extension
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  publish:
+    if: ${{ startsWith(github.event.release.tag_name, 'vscode-v') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Install dependencies
+        run: pnpm install
+        working-directory: vscode-decoder
+
+      - name: Package extension
+        run: pnpm dlx @vscode/vsce package --no-dependencies
+        working-directory: vscode-decoder
+
+      - name: Publish to VS Code Marketplace
+        run: pnpm dlx @vscode/vsce publish --no-dependencies --packagePath *.vsix
+        working-directory: vscode-decoder
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+
+      - name: Upload .vsix to release
+        run: gh release upload "${{ github.event.release.tag_name }}" vscode-decoder/*.vsix
+        env:
+          GH_TOKEN: ${{ github.token }}

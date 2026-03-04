@@ -1,6 +1,6 @@
 [project]
 name = "decoder-graph"
-version = "0.1.0"
+version = "0.2.0"
 description = "Static call graph traversal for Python codebases"
 readme = "README.md"
 requires-python = ">=3.11"

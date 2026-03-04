@@ -11,6 +11,8 @@ from decoder.core.models import IndexStats, SymbolType
 from decoder.core.storage import SymbolRepository, compute_file_hash
 from decoder.languages import ParsedEdge, ParseResult, PythonParser
 
+_SUPER_PREFIX = "super."
+
 ProgressCallback = Callable[[Path, int, int], None]
 
 _SELF_PREFIX = "self."
@@ -35,6 +37,7 @@ class Indexer:
         self._parser = PythonParser()
 
         self._symbol_cache: dict[str, int] = {}
+        self._class_bases: dict[str, list[str]] = {}
 
     def index_directory(
         self,
@@ -113,10 +116,14 @@ class Indexer:
             if on_progress:
                 on_progress(file, i + 1, total_files)
 
+        for _file, result in parse_results:
+            if result.class_bases:
+                self._class_bases.update(result.class_bases)
+
         for file, result in parse_results:
             for parsed_edge in result.edges:
                 callee_id = self._resolve_callee(
-                    parsed_edge.callee_name,
+                    parsed_edge,
                     parsed_edge.caller_qualified_name,
                     result,
                 )
@@ -155,9 +162,12 @@ class Indexer:
             self._symbol_cache[parsed_symbol.qualified_name] = symbol_id
             stats.symbols += 1
 
+        if result.class_bases:
+            self._class_bases.update(result.class_bases)
+
         for parsed_edge in result.edges:
             callee_id = self._resolve_callee(
-                parsed_edge.callee_name,
+                parsed_edge,
                 parsed_edge.caller_qualified_name,
                 result,
             )
@@ -221,13 +231,14 @@ class Indexer:
 
     def _resolve_callee(
         self,
-        callee_name: str,
+        parsed_edge: ParsedEdge,
         caller_qualified_name: str,
         parse_result: ParseResult,
     ) -> int | None:
         """Resolve a callee name to a symbol ID.
 
         This handles:
+        - super().method() calls (resolve via MRO)
         - Direct references (already in cache)
         - self.method calls (resolve within current class)
         - self.attr.method calls (resolve via instance variable type)
@@ -235,6 +246,11 @@ class Indexer:
         - Imported names (look up via imports dict)
         - Qualified names (module.func)
         """
+        callee_name = parsed_edge.callee_name
+
+        if parsed_edge.is_super_call and callee_name.startswith(_SUPER_PREFIX):
+            return self._resolve_super_call(callee_name, caller_qualified_name, parse_result)
+
         if callee_name in self._symbol_cache:
             return self._symbol_cache[callee_name]
 
@@ -386,6 +402,150 @@ class Indexer:
         for s in self._repo.symbols.find(method_name):
             if s.qualified_name.endswith(f".{var_type}.{method_name}"):
                 return s.id
+
+        return None
+
+    def _resolve_super_call(
+        self,
+        callee_name: str,
+        caller_qualified_name: str,
+        parse_result: ParseResult,
+    ) -> int | None:
+        """Resolve a super().method() call to the parent class method.
+
+        Args:
+            callee_name: The call like "super.save"
+            caller_qualified_name: The method containing the call
+            parse_result: Parse result with imports
+
+        Returns:
+            Symbol ID if resolved, None otherwise
+        """
+        method_name = callee_name[len(_SUPER_PREFIX) :]
+
+        class_name = self._get_enclosing_class(caller_qualified_name)
+        if not class_name:
+            return None
+
+        mro = self._compute_mro(class_name, parse_result)
+        # Skip the class itself (index 0) — super() resolves to parents
+        for parent_qname in mro[1:]:
+            method_qualified = f"{parent_qname}.{method_name}"
+            if method_qualified in self._symbol_cache:
+                return self._symbol_cache[method_qualified]
+            try:
+                symbol = self._repo.symbols.get_by_qualified_name(method_qualified)
+                return symbol.id
+            except SymbolNotFoundError:
+                pass
+
+            # Fallback: search by name suffix
+            for s in self._repo.symbols.find(method_name):
+                if s.qualified_name == method_qualified or (
+                    s.qualified_name.endswith(f".{method_name}")
+                    and parent_qname.split(".")[-1] in s.qualified_name
+                ):
+                    return s.id
+
+        return None
+
+    def _compute_mro(
+        self,
+        class_qname: str,
+        parse_result: ParseResult,
+        _seen: set[str] | None = None,
+    ) -> list[str]:
+        """Compute the Method Resolution Order for a class using C3 linearization.
+
+        Returns an ordered list of qualified class names starting with the class itself.
+        """
+        if _seen is None:
+            _seen = set()
+        if class_qname in _seen:
+            return [class_qname]
+        _seen.add(class_qname)
+
+        bases = self._class_bases.get(class_qname, [])
+
+        resolved_bases: list[str] = []
+        for base_name in bases:
+            resolved = self._resolve_base_class(base_name, parse_result)
+            if resolved:
+                resolved_bases.append(resolved)
+
+        if not resolved_bases:
+            return [class_qname]
+
+        # C3 linearization
+        linearizations = [self._compute_mro(b, parse_result, _seen) for b in resolved_bases]
+        linearizations.append(resolved_bases)
+
+        result = [class_qname]
+        while linearizations:
+            # Find a candidate that doesn't appear in the tail of any linearization
+            candidate = None
+            for lin in linearizations:
+                if not lin:
+                    continue
+                head = lin[0]
+                if all(head not in seq[1:] for seq in linearizations):
+                    candidate = head
+                    break
+
+            if candidate is None:
+                # Fall back to simple order if C3 fails (e.g., inconsistent hierarchy)
+                for lin in linearizations:
+                    for cls in lin:
+                        if cls not in result:
+                            result.append(cls)
+                break
+
+            result.append(candidate)
+            linearizations = [
+                [c for c in lin if c != candidate] for lin in linearizations
+            ]
+            linearizations = [lin for lin in linearizations if lin]
+
+        return result
+
+    def _resolve_base_class(
+        self,
+        base_name: str,
+        parse_result: ParseResult,
+    ) -> str | None:
+        """Resolve a base class name to a qualified name."""
+        # Check symbol cache directly
+        if base_name in self._symbol_cache:
+            return base_name
+
+        # Check imports
+        first_part = base_name.split(".")[0]
+        if first_part in parse_result.imports:
+            imported = parse_result.imports[first_part]
+            rest = base_name[len(first_part) :]
+            resolved = imported + rest
+            if resolved in self._symbol_cache:
+                return resolved
+
+        # Search by short name in symbol cache (suffix match)
+        suffix = f".{base_name}"
+        for qname in self._symbol_cache:
+            if qname.endswith(suffix):
+                try:
+                    symbol = self._repo.symbols.get_by_qualified_name(qname)
+                    if symbol.type == SymbolType.CLASS:
+                        return qname
+                except SymbolNotFoundError:
+                    pass
+
+        # Fallback: search via repository find
+        short_name = base_name.rsplit(".", 1)[-1]
+        for s in self._repo.symbols.find(short_name):
+            if s.type == SymbolType.CLASS and s.qualified_name.endswith(suffix):
+                # Cache for future lookups
+                if s.qualified_name not in self._symbol_cache:
+                    self._symbol_cache[s.qualified_name] = s.id
+                return s.qualified_name
 
         return None
 

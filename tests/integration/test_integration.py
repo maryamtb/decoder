@@ -461,3 +461,223 @@ class DataService:
         load_callers = repository.edges.get_callers(store_load.id)
         load_caller_names = [c[0].name for c in load_callers]
         assert "load_data" in load_caller_names
+
+
+class TestSuperCallResolution:
+    """Tests for resolving super().method() calls to parent class methods."""
+
+    def test_super_single_inheritance(
+        self, repository: SymbolRepository, temp_dir: Path
+    ) -> None:
+        """Test that super().method() resolves to the parent class method."""
+        code = """
+class Animal:
+    def speak(self) -> str:
+        return "..."
+
+class Dog(Animal):
+    def speak(self) -> str:
+        base = super().speak()
+        return f"Woof! {base}"
+"""
+        file_path = temp_dir / "animals.py"
+        file_path.write_text(code)
+
+        indexer = Indexer(repository)
+        indexer.index_file(file_path)
+
+        # Find Animal.speak
+        speak_methods = repository.symbols.find("speak")
+        animal_speak = next(
+            (s for s in speak_methods if "Animal" in s.qualified_name), None
+        )
+        assert animal_speak is not None
+
+        # Verify Dog.speak calls Animal.speak via super()
+        callers = repository.edges.get_callers(animal_speak.id)
+        caller_names = [c[0].name for c in callers]
+        assert "speak" in caller_names
+
+        # Verify the caller is Dog.speak specifically
+        dog_speak = next(
+            (s for s in speak_methods if "Dog" in s.qualified_name), None
+        )
+        assert dog_speak is not None
+        caller_ids = [c[0].id for c in callers]
+        assert dog_speak.id in caller_ids
+
+    def test_super_explicit_form(
+        self, repository: SymbolRepository, temp_dir: Path
+    ) -> None:
+        """Test that super(ClassName, self).method() resolves to parent."""
+        code = """
+class Base:
+    def process(self) -> None:
+        pass
+
+class Child(Base):
+    def process(self) -> None:
+        super(Child, self).process()
+"""
+        file_path = temp_dir / "explicit.py"
+        file_path.write_text(code)
+
+        indexer = Indexer(repository)
+        indexer.index_file(file_path)
+
+        # Find Base.process
+        process_methods = repository.symbols.find("process")
+        base_process = next(
+            (s for s in process_methods if "Base" in s.qualified_name), None
+        )
+        assert base_process is not None
+
+        # Verify Child.process calls Base.process via super()
+        callers = repository.edges.get_callers(base_process.id)
+        caller_qnames = [c[0].qualified_name for c in callers]
+        assert any("Child" in qn for qn in caller_qnames)
+
+    def test_super_deep_inheritance(
+        self, repository: SymbolRepository, temp_dir: Path
+    ) -> None:
+        """Test grandparent resolution: A->B->C, C calls super in method not in B."""
+        code = """
+class A:
+    def action(self) -> str:
+        return "A"
+
+class B(A):
+    pass
+
+class C(B):
+    def action(self) -> str:
+        return super().action()
+"""
+        file_path = temp_dir / "deep.py"
+        file_path.write_text(code)
+
+        indexer = Indexer(repository)
+        indexer.index_file(file_path)
+
+        # Find A.action — the grandparent method
+        action_methods = repository.symbols.find("action")
+        a_action = next(
+            (s for s in action_methods if "A.action" in s.qualified_name
+             and "B" not in s.qualified_name
+             and "C" not in s.qualified_name), None
+        )
+        assert a_action is not None
+
+        # C.action should call A.action via super() (since B doesn't have action)
+        callers = repository.edges.get_callers(a_action.id)
+        caller_qnames = [c[0].qualified_name for c in callers]
+        assert any("C" in qn for qn in caller_qnames)
+
+    def test_super_multiple_inheritance(
+        self, repository: SymbolRepository, temp_dir: Path
+    ) -> None:
+        """Test diamond pattern with correct MRO order."""
+        code = """
+class Base:
+    def method(self) -> str:
+        return "Base"
+
+class Left(Base):
+    def method(self) -> str:
+        return "Left"
+
+class Right(Base):
+    def method(self) -> str:
+        return "Right"
+
+class Diamond(Left, Right):
+    def method(self) -> str:
+        return super().method()
+"""
+        file_path = temp_dir / "diamond.py"
+        file_path.write_text(code)
+
+        indexer = Indexer(repository)
+        indexer.index_file(file_path)
+
+        # MRO for Diamond: Diamond -> Left -> Right -> Base
+        # super().method() in Diamond should resolve to Left.method
+        method_symbols = repository.symbols.find("method")
+        left_method = next(
+            (s for s in method_symbols if "Left" in s.qualified_name), None
+        )
+        assert left_method is not None
+
+        callers = repository.edges.get_callers(left_method.id)
+        caller_qnames = [c[0].qualified_name for c in callers]
+        assert any("Diamond" in qn for qn in caller_qnames)
+
+    def test_super_init(
+        self, repository: SymbolRepository, temp_dir: Path
+    ) -> None:
+        """Test that super().__init__() resolves to parent __init__."""
+        code = """
+class Parent:
+    def __init__(self, name: str):
+        self.name = name
+
+class Child(Parent):
+    def __init__(self, name: str, age: int):
+        super().__init__(name)
+        self.age = age
+"""
+        file_path = temp_dir / "init_test.py"
+        file_path.write_text(code)
+
+        indexer = Indexer(repository)
+        indexer.index_file(file_path)
+
+        # Find Parent.__init__
+        init_methods = repository.symbols.find("__init__")
+        parent_init = next(
+            (s for s in init_methods if "Parent" in s.qualified_name), None
+        )
+        assert parent_init is not None
+
+        # Verify Child.__init__ calls Parent.__init__ via super()
+        callers = repository.edges.get_callers(parent_init.id)
+        caller_qnames = [c[0].qualified_name for c in callers]
+        assert any("Child" in qn for qn in caller_qnames)
+
+    def test_super_cross_file(
+        self, repository: SymbolRepository, temp_dir: Path
+    ) -> None:
+        """Test super() resolution when parent class is in a different file."""
+        parent_code = """
+class BaseHandler:
+    def handle(self, request: str) -> str:
+        return "handled"
+"""
+        (temp_dir / "base.py").write_text(parent_code)
+
+        child_code = """
+from base import BaseHandler
+
+class CustomHandler(BaseHandler):
+    def handle(self, request: str) -> str:
+        result = super().handle(request)
+        return f"custom: {result}"
+"""
+        (temp_dir / "custom.py").write_text(child_code)
+
+        indexer = Indexer(repository)
+        indexer.index_directory(temp_dir)
+
+        # Find BaseHandler.handle (the method, not the class)
+        handle_methods = repository.symbols.find("handle")
+        base_handle = next(
+            (s for s in handle_methods
+             if "BaseHandler" in s.qualified_name
+             and s.qualified_name.endswith(".handle")), None
+        )
+        assert base_handle is not None
+
+        # Verify CustomHandler.handle calls BaseHandler.handle via super()
+        callers = repository.edges.get_callers(base_handle.id)
+        caller_qnames = [c[0].qualified_name for c in callers]
+        assert any("CustomHandler" in qn for qn in caller_qnames)

@@ -46,6 +46,7 @@ class PythonParser:
             imports=visitor.imports,
             star_imports=visitor.star_imports,
             typed_vars=visitor.typed_vars,
+            class_bases=visitor.class_bases,
         )
 
 
@@ -75,6 +76,8 @@ class _PythonVisitor(ast.NodeVisitor):
         self._scope_stack: list[_Scope] = []
 
         self._current_class: str | None = None
+
+        self.class_bases: dict[str, list[str]] = {}
 
         self._property_methods: set[str] = set()
 
@@ -162,6 +165,7 @@ class _PythonVisitor(ast.NodeVisitor):
         line: int,
         edge_type: EdgeType,
         is_self_call: bool = False,
+        is_super_call: bool = False,
         is_attribute: bool = False,
         import_source: str | None = None,
     ) -> None:
@@ -179,6 +183,7 @@ class _PythonVisitor(ast.NodeVisitor):
                 call_line=line,
                 call_type=edge_type,
                 is_self_call=is_self_call,
+                is_super_call=is_super_call,
                 is_attribute=is_attribute,
                 import_source=import_source,
                 context=self._get_current_context(),
@@ -249,14 +254,18 @@ class _PythonVisitor(ast.NodeVisitor):
             end_line=node.end_lineno,
         )
 
+        base_names: list[str] = []
         for base in node.bases:
             base_name = self._get_name_from_node(base)
             if base_name:
+                base_names.append(base_name)
                 self._add_edge(
                     callee_name=base_name,
                     line=node.lineno,
                     edge_type=EdgeType.INHERIT,
                 )
+        if base_names:
+            self.class_bases[qualified_name] = base_names
 
         for decorator in node.decorator_list:
             dec_name = self._get_name_from_node(decorator)
@@ -429,8 +438,37 @@ class _PythonVisitor(ast.NodeVisitor):
                 )
         self.generic_visit(node)
 
+    def _is_super_call(self, node: ast.Call) -> tuple[bool, str | None]:
+        """Check if a call is super().method() or super(Class, self).method().
+
+        Returns (is_super, method_name) tuple.
+        """
+        if not isinstance(node.func, ast.Attribute):
+            return False, None
+
+        value = node.func.value
+        if not isinstance(value, ast.Call):
+            return False, None
+
+        func = value.func
+        if isinstance(func, ast.Name) and func.id == "super":
+            return True, node.func.attr
+
+        return False, None
+
     def visit_Call(self, node: ast.Call) -> None:
         """Handle function and method calls."""
+        is_super, method_name = self._is_super_call(node)
+        if is_super and method_name:
+            self._add_edge(
+                callee_name=f"super.{method_name}",
+                line=node.lineno,
+                edge_type=EdgeType.CALL,
+                is_super_call=True,
+            )
+            self.generic_visit(node)
+            return
+
         callee_name = self._get_name_from_node(node.func)
         if callee_name:
             is_self_call = callee_name.startswith("self.")

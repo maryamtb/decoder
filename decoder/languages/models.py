@@ -43,6 +43,7 @@ class ParsedEdge:
     call_line: int
     call_type: EdgeType
     is_self_call: bool = False
+    is_super_call: bool = False
     is_attribute: bool = False
     import_source: str | None = None
     context: CallContext | None = None
@@ -67,3 +68,4 @@ class ParseResult:
     imports: dict[str, str]
     star_imports: list[str]
     typed_vars: list[TypedVar] | None = None
+    class_bases: dict[str, list[str]] | None = None

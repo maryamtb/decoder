@@ -1,9 +1,9 @@
 """Unit tests for the Python AST parser."""
 
-import pytest
 from pathlib import Path
-from decoder.languages.python import PythonParser
+
 from decoder.core.models import EdgeType, SymbolType
+from decoder.languages.python import PythonParser
 
 
 def parse(code: str):
@@ -58,7 +58,14 @@ class TestEdgeExtraction:
         assert "foo" in callees
 
     def test_method_call(self):
-        result = parse("class A:\n    def go(self):\n        self.helper()\n    def helper(self):\n        pass\n")
+        code = (
+            "class A:\n"
+            "    def go(self):\n"
+            "        self.helper()\n"
+            "    def helper(self):\n"
+            "        pass\n"
+        )
+        result = parse(code)
         self_calls = [e for e in result.edges if e.is_self_call]
         assert any("helper" in e.callee_name for e in self_calls)
 
